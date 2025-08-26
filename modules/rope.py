@@ -1,30 +1,30 @@
 import torch
-import torch.nn as nn
 from torch import Tensor
-import time
+from einops import rearrange
 
-def generate_rope(pos: Tensor, dim : int, base: int) -> Tensor:
-    exponent = torch.arange(0, dim, 2, device = pos.device, dtype = pos.dtype)
-    scale = 1.0 / (base**exponent)
-    angles = torch.einsum("...n, ...d -> ...nd", pos, scale)
-    print(angles.size())
-    output = torch.stack((torch.cos(angles), torch.sin(angles), - torch.sin(angles), torch.cos(angles)), dim = -1)
-    output = output.contiguous().view([*output.size()[:-1], 2, 2])
-    return output
+def generate_rope(ids : Tensor, dim :int, period :float = 10000.) -> Tensor:
+    dim_ids = torch.arange(0, dim/2).unsqueeze(0)/dim
+    angles = torch.exp(-torch.log(torch.tensor(period)) * 2 * dim_ids)
+    ids = rearrange(ids, "... N D -> ... D N")
+    angles = ids @ angles
+    angle_matrix = torch.stack([torch.cos(angles), -torch.sin(angles), torch.sin(angles), torch.cos(angles)], dim = -1)   
+    angle_matrix = rearrange(angle_matrix, "... (D W) -> ... D W", D = 2, W = 2)
+    return angle_matrix
 
-
-def apply_rope(x: Tensor, rot_tensor: Tensor):
-    shape = x.size()
-    x = x.contiguous().view([*shape[:-1], -1, 1, 2])
-    x = rot_tensor[..., 0] * x[... , 0] + rot_tensor[..., 1] * x[..., 1]
-    x = x.reshape(shape)
+def apply_rope(x : Tensor, rot_tensor : Tensor) ->Tensor:
+    D = x.size()[-1]
+    x = rearrange(x, "... (D A) -> ... D A", D =D//2, A = 2)
+    rot_tensor = rot_tensor.unsqueeze(0)
+    print(rot_tensor.size())
+    x = x * rot_tensor[..., 0] + x * rot_tensor[..., 1]
+    x = rearrange(x, "... D A -> ... (D A)", D = D//2, A = 2)
     return x
 
 if __name__ == '__main__':
     B, H, N, D = (16, 4, 128, 768)
     tensor = torch.randn([B, H, N, D])
-    pos = torch.arange(0, 2 * N, 1, dtype = torch.float16, device = 'cpu').unsqueeze(0).repeat(B ,H , 1)
-    rot_tensor = generate_rope(pos, D, 10000)
+    pos = torch.arange(0, N, 1, dtype = torch.float, device = 'cpu').unsqueeze(0)
+    rot_tensor = generate_rope(pos, D)
     rop = apply_rope(tensor, rot_tensor)
     print(rop.size())
 
